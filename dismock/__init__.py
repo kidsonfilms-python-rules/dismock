@@ -106,7 +106,7 @@ class Interface:
 
 	def __init__(self,
 	             client: discord.Client,
-	             channel: discord.Channel,
+	             channel: discord.TextChannel,
 	             target: discord.User) -> None:
 		self.client = client # The discord.py client object
 		self.channel = channel # The channel the test is running in
@@ -114,7 +114,7 @@ class Interface:
 
 	async def send_message(self, content):
 		''' Send a message to the testing channel. '''
-		return await self.client.send_message(self.channel, content)
+		return await self.client.get_channel(self.channel.id).send(content)
 
 	async def edit_message(self, message, new_content):
 		''' Modified a message. Doesn't actually care what this message is. '''
@@ -136,10 +136,7 @@ class Interface:
 			If the bot takes longer than {} seconds, the test fails.
 		'''.format(TIMEOUT)
 
-		result = await self.client.wait_for_message(
-			timeout=TIMEOUT,
-			channel=self.channel,
-			author=self.target)
+		result = await self.client.wait_for('message', timeout=TIMEOUT)
 		if result is None:
 			raise NoResponseError
 		return result
@@ -309,7 +306,7 @@ class DiscordBot(discord.Client):
 		self._target_name = target_name.lower()
 		# self._setup_done = False
 
-	def _find_target(self, server: discord.Server) -> discord.Member:
+	def _find_target(self, server: discord.Guild) -> discord.Member:
 		for i in server.members:
 			if self._target_name in i.name.lower():
 				return i
@@ -317,7 +314,7 @@ class DiscordBot(discord.Client):
 
 	async def run_test(self,
 		               test: Test,
-		               channel: discord.Channel,
+		               channel: discord.TextChannel,
 		               stop_error: bool = False) -> TestResult:
 		''' Run a single test in a given channel.
 			Updates the test with the result, and also returns it.
@@ -325,7 +322,7 @@ class DiscordBot(discord.Client):
 		interface = Interface(
 			self,
 			channel,
-			self._find_target(channel.server))
+			self._find_target(channel.guild))
 		try:
 			await test.func(interface)
 		except TestRequirementFailure:
@@ -350,10 +347,10 @@ class DiscordUI(DiscordBot):
 	async def _run_by_predicate(self, channel, prediate):
 		for test in self._tests:
 			if prediate(test):
-				await self.send_message(channel, '**Running test {}**'.format(test.name))
+				await self.get_channel(channel.id).send('**Running test {}**'.format(test.name))
 				await self.run_test(test, channel, stop_error=True)
 
-	async def _display_stats(self, channel: discord.Channel) -> None:
+	async def _display_stats(self, channel: discord.TextChannel) -> None:
 		''' Display the status of the various tests. '''
 		# NOTE: An emoji is the width of two spaces
 		response = '```\n'
@@ -371,44 +368,43 @@ class DiscordUI(DiscordBot):
 			elif test.result is TestResult.FAILED:
 				response += '❌ Failed\n'
 		response += '```\n'
-		await self.send_message(channel, response)
+		await self.get_channel(channel.id).send(response)
 
 	async def on_ready(self) -> None:
 		''' Report when the bot is ready for use '''
-		print('Started dismock bot.')
+		print('dismock has started')
 		print('Available tests are:')
 		for i in self._tests:
 			print('   {}'.format(i.name))
 
 	async def on_message(self, message: discord.Message) -> None:
 		''' Handle an incomming message '''
-		if not message.channel.is_private:
-			if message.content.startswith('::run '):
-				name = message.content[6:]
-				print('Running test:', name)
-				if name == 'all':
-					await self._run_by_predicate(message.channel, lambda t: True)
-				elif name == 'unrun':
-					pred = lambda t: t.result is TestResult.UNRUN
-					await self._run_by_predicate(message.channel, pred)
-				elif name == 'failed':
-					pred = lambda t: t.result is TestResult.FAILED
-					await self._run_by_predicate(message.channel, pred)
-				elif '*' in name:
-					regex = re.compile(name.replace('*', '.*'))
-					await self.run_many(message, lambda t: regex.fullmatch(t.name))
-				elif self._tests.find_by_name(name) is None:
-					text = ':x: There is no test called `{}`'
-					await self.send_message(message.channel, text.format(name))
-				else:
-					await self.send_message(message.channel, 'Running test `{}`'.format(name))
-					await self.run_test(self._tests.find_by_name(name), message.channel)
-					await self._display_stats(message.channel)
-			# Status display command
-			elif message.content in ['::stats', '::list']:
+		if message.content.startswith('::run '):
+			name = message.content[6:]
+			print('Running test:', name)
+			if name == 'all':
+				await self._run_by_predicate(message.channel, lambda t: True)
+			elif name == 'unrun':
+				pred = lambda t: t.result is TestResult.UNRUN
+				await self._run_by_predicate(message.channel, pred)
+			elif name == 'failed':
+				pred = lambda t: t.result is TestResult.FAILED
+				await self._run_by_predicate(message.channel, pred)
+			elif '*' in name:
+				regex = re.compile(name.replace('*', '.*'))
+				await self.run_many(message, lambda t: regex.fullmatch(t.name))
+			elif self._tests.find_by_name(name) is None:
+				text = ':x: There is no test called `{}`'
+				await self.send_message(message.channel, text.format(name))
+			else:
+				await self.send_message(message.channel, 'Running test `{}`'.format(name))
+				await self.run_test(self._tests.find_by_name(name), message.channel)
 				await self._display_stats(message.channel)
-			elif message.content == '::help':
-				await self.send_message(message.channel, HELP_TEXT)
+		# Status display command
+		elif message.content in ['::stats', '::list']:
+			await self._display_stats(message.channel)
+		elif message.content == '::help':
+			await message.reply(HELP_TEXT)
 
 
 def run_interactive_bot(target_name, token, test_collector):
